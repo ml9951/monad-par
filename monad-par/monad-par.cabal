@@ -86,6 +86,10 @@ Flag newgeneric
    Description: Provide instances for the new par-classes generic Par programming interface.
    Default: False
 
+Flag tl2
+     Description:	Use TL2 for STM based work stealing
+     Default:		False
+
 Source-repository head
   type:     git
   location: https://github.com/simonmar/monad-par
@@ -129,6 +133,10 @@ Library
   if flag(newgeneric)
     cpp-options: -DNEW_GENERIC
     build-depends: par-classes
+
+  if flag(tl2)
+     cpp-options:	-DPASTMTL2
+     build-depends:	pastm
 
   ghc-options: -O2
   Other-modules:
