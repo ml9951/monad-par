@@ -1,5 +1,5 @@
 {-# LANGUAGE RankNTypes, NamedFieldPuns, BangPatterns,
-             ExistentialQuantification, CPP #-}
+             ExistentialQuantification, CPP, DoAndIfThenElse #-}
 {-# OPTIONS_GHC -Wall -fno-warn-name-shadowing -fno-warn-unused-do-bind #-}
 
 -- | This module exposes the internals of the @Par@ monad so that you
@@ -25,7 +25,16 @@ import System.IO.Unsafe
 import Control.Concurrent hiding (yield)
 import GHC.Conc (numCapabilities)
 import Control.DeepSeq
+
+import qualified Control.Monad.Par.Scheds.TDeque as D
+
 -- import Text.Printf
+
+#ifdef PASTMTL2
+import Control.TL2.STM
+#else
+import Control.Concurrent.STM
+#endif
 
 #if !MIN_VERSION_base(4,8,0)
 import Control.Applicative
@@ -44,6 +53,7 @@ data Trace = forall a . Get (IVar a) (a -> Trace)
            | forall a . New (IVarContents a) (IVar a -> Trace)
            | Fork Trace Trace
            | Done
+           | Die
            | Yield Trace
            | forall a . LiftIO (IO a) (a -> Trace)
 
@@ -85,84 +95,66 @@ sched _doSync queue t = loop t
 -- But even if we don't we are not orphaning any work in this
 -- threads work-queue because it can be stolen by other threads.
 --       else return ()
-
     Yield parent -> do
-        -- Go to the end of the worklist:
-        let Sched { workpool } = queue
-        -- TODO: Perhaps consider Data.Seq here.
-        -- This would also be a chance to steal and work from opposite ends of the queue.
-        atomicModifyIORef workpool $ \ts -> (ts++[parent], ())
+        atomically $ D.pushWork (workpool queue) parent
         reschedule queue
     LiftIO io c -> do
         r <- io
         loop (c r)
+    Die -> return()
+
+incTVar :: TVar Int -> Int -> STM ()
+incTVar t i = do
+        x <- readTVar t
+        writeTVar t (x+i)
 
 -- | Process the next item on the work queue or, failing that, go into
---   work-stealing mode.
+--   work-stealing mode.  We keep track of how many threads are searching
+--   for work.  If N-1 threads are trying to steal, and I also am trying
+--   to steal, then it must be the case that everyone is asleep in a retry.
 reschedule :: Sched -> IO ()
-reschedule queue@Sched{ workpool } = do
-  e <- atomicModifyIORef workpool $ \ts ->
-         case ts of
-           []      -> ([], Nothing)
-           (t:ts') -> (ts', Just t)
-  case e of
-    Nothing -> steal queue
-    Just t  -> sched True queue t
-
-
+reschedule queue@Sched{ workpool, shutdown, lookingForWork } = do
+           mTask <- atomically (D.tryPopWork workpool)
+           case mTask of
+                Just t -> sched True queue t
+                Nothing -> do
+                        continue <- atomically $ do
+                                   n <- readTVar lookingForWork
+                                   if n == numCapabilities - 1 --my deque is empty and everyone else is looking for work
+                                   then writeTVar shutdown True >> return False  --no one has anything left so we are odne
+                                   else writeTVar lookingForWork (n+1) >> return True
+                        if continue
+                        then do t <- atomically(steal queue); atomically (incTVar lookingForWork (-1)); sched True queue t
+                        else return()
+                        
 -- RRN: Note -- NOT doing random work stealing breaks the traditional
 -- Cilk time/space bounds if one is running strictly nested (series
 -- parallel) programs.
 
 -- | Attempt to steal work or, failing that, give up and go idle.
-steal :: Sched -> IO ()
-steal q@Sched{ idle, scheds, no=my_no } = do
+steal :: Sched -> STM Trace
+steal Sched{ scheds, no=my_no, shutdown } = do
   -- printf "cpu %d stealing\n" my_no
   go scheds
   where
-    go [] = do m <- newEmptyMVar
-               r <- atomicModifyIORef idle $ \is -> (m:is, is)
-               if length r == numCapabilities - 1
-                  then do
-                     -- printf "cpu %d initiating shutdown\n" my_no
-                     mapM_ (\m -> putMVar m True) r
-                  else do
-                    done <- takeMVar m
-                    if done
-                       then do
-                         -- printf "cpu %d shutting down\n" my_no
-                         return ()
-                       else do
-                         -- printf "cpu %d woken up\n" my_no
-                         go scheds
+    go [] = do
+       done <- readTVar shutdown
+       if done
+       then return Die
+       else retry
     go (x:xs)
       | no x == my_no = go xs
-      | otherwise     = do
-         r <- atomicModifyIORef (workpool x) $ \ ts ->
-                 case ts of
-                    []     -> ([], Nothing)
-                    (x:xs) -> (xs, Just x)
-         case r of
-           Just t  -> do
-              -- printf "cpu %d got work from cpu %d\n" my_no (no x)
-              sched True q t
-           Nothing -> go xs
+      | otherwise     = D.stealWork (workpool x) `orElse` go xs
 
 -- | If any worker is idle, wake one up and give it work to do.
 pushWork :: Sched -> Trace -> IO ()
-pushWork Sched { workpool, idle } t = do
-  atomicModifyIORef workpool $ \ts -> (t:ts, ())
-  idles <- readIORef idle
-  when (not (null idles)) $ do
-    r <- atomicModifyIORef idle (\is -> case is of
-                                          [] -> ([], return ())
-                                          (i:is) -> (is, putMVar i False))
-    r -- wake one up
+pushWork Sched { workpool } t = atomically $ D.pushWork workpool t
 
 data Sched = Sched
     { no       :: {-# UNPACK #-} !Int,
-      workpool :: IORef [Trace],
-      idle     :: IORef [MVar Bool],
+      workpool :: D.Deque Trace,
+      shutdown :: TVar Bool,
+      lookingForWork :: TVar Int,
       scheds   :: [Sched] -- Global list of all per-thread workers.
     }
 --  deriving Show
@@ -209,9 +201,9 @@ data IVarContents a = Full a | Empty | Blocked [a -> Trace]
 {-# INLINE runPar_internal #-}
 runPar_internal :: Bool -> Par a -> IO a
 runPar_internal _doSync x = do
-   workpools <- replicateM numCapabilities $ newIORef []
-   idle <- newIORef []
-   let states = [ Sched { no=x, workpool=wp, idle, scheds=states }
+   workpools <- replicateM numCapabilities $ atomically $ D.newDeque 72 --Is 72 reasonable?
+   (shutdown, lookingForWork) <- atomically $ do x <- newTVar False; y <- newTVar 0; return(x, y)
+   let states = [ Sched { no=x, workpool=wp, shutdown, lookingForWork, scheds=states }
                 | (x,wp) <- zip [0..] workpools ]
 
 #if __GLASGOW_HASKELL__ >= 701 /* 20110301 */
