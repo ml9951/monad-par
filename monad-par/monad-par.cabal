@@ -155,7 +155,7 @@ Library
 
                Control.Monad.Par.Scheds.DirectInternal
               ,Control.Monad.Par.Scheds.TDeque
-
+              ,Control.Monad.Par.Scheds.ResizableDeque
                ------------------------------------------------------------
                --                   Data Structures                      -- 
                ------------------------------------------------------------

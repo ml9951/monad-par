@@ -26,7 +26,7 @@ import Control.Concurrent hiding (yield)
 import GHC.Conc (numCapabilities)
 import Control.DeepSeq
 
-import qualified Control.Monad.Par.Scheds.TDeque as D
+import qualified Control.Monad.Par.Scheds.ResizableDeque as D
 
 -- import Text.Printf
 
@@ -80,10 +80,10 @@ sched _doSync queue t = loop t
                Empty    -> (Full a, [])
                Full _   -> error "multiple put"
                Blocked cs -> (Full a, cs)
-      mapM_ (pushWork queue. ($a)) cs
+      mapM_ (D.pushWork (workpool queue) . ($a)) cs
       loop t
     Fork child parent -> do
-         pushWork queue child
+         D.pushWork (workpool queue) child
          loop parent
     Done ->
          if _doSync
@@ -96,7 +96,7 @@ sched _doSync queue t = loop t
 -- threads work-queue because it can be stolen by other threads.
 --       else return ()
     Yield parent -> do
-        atomically $ D.pushWork (workpool queue) parent
+        D.pushWork (workpool queue) parent
         reschedule queue
     LiftIO io c -> do
         r <- io
@@ -145,10 +145,6 @@ steal Sched{ scheds, no=my_no, shutdown } = do
     go (x:xs)
       | no x == my_no = go xs
       | otherwise     = D.stealWork (workpool x) `orElse` go xs
-
--- | If any worker is idle, wake one up and give it work to do.
-pushWork :: Sched -> Trace -> IO ()
-pushWork Sched { workpool } t = atomically $ D.pushWork workpool t
 
 data Sched = Sched
     { no       :: {-# UNPACK #-} !Int,
