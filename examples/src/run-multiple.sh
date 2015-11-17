@@ -16,6 +16,10 @@ do
     do
 	make $bench STM=$stm GHC=$GHC
     done
+
+    if [ ! -d "$/bench/times" ]; then
+	mkdir "$bench/times"
+    fi
     
     for i in {1..5}
     do
