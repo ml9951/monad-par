@@ -25,6 +25,13 @@ import System.IO.Unsafe
 import Control.Concurrent hiding (yield)
 import GHC.Conc (numCapabilities)
 import Control.DeepSeq
+
+#ifdef USE_CHASELEV
+#warning "Note: using Chase-Lev lockfree workstealing deques..."
+import Data.Concurrent.Deque.ChaseLev.DequeInstance
+import Data.Concurrent.Deque.ChaseLev as R
+#endif
+
 -- import Text.Printf
 
 #if !MIN_VERSION_base(4,8,0)
@@ -38,6 +45,8 @@ forkOn = forkOnIO
 
 
 -- ---------------------------------------------------------------------------
+
+
 
 data Trace = forall a . Get (IVar a) (a -> Trace)
            | forall a . Put (IVar a) a Trace
@@ -91,20 +100,29 @@ sched _doSync queue t = loop t
         let Sched { workpool } = queue
         -- TODO: Perhaps consider Data.Seq here.
         -- This would also be a chance to steal and work from opposite ends of the queue.
+#ifdef USE_CHASELEV
+        R.pushL workpool parent
+#else
         atomicModifyIORef workpool $ \ts -> (ts++[parent], ())
+#endif
         reschedule queue
     LiftIO io c -> do
         r <- io
         loop (c r)
 
+
 -- | Process the next item on the work queue or, failing that, go into
 --   work-stealing mode.
 reschedule :: Sched -> IO ()
 reschedule queue@Sched{ workpool } = do
+#ifdef USE_CHASELEV
+  e <- R.tryPopL workpool
+#else
   e <- atomicModifyIORef workpool $ \ts ->
          case ts of
            []      -> ([], Nothing)
            (t:ts') -> (ts', Just t)
+#endif  
   case e of
     Nothing -> steal queue
     Just t  -> sched True queue t
@@ -138,20 +156,29 @@ steal q@Sched{ idle, scheds, no=my_no } = do
     go (x:xs)
       | no x == my_no = go xs
       | otherwise     = do
+#ifdef USE_CHASELEV
+         r <- R.tryPopR (workpool x)
+#else
          r <- atomicModifyIORef (workpool x) $ \ ts ->
                  case ts of
                     []     -> ([], Nothing)
                     (x:xs) -> (xs, Just x)
+#endif                
          case r of
            Just t  -> do
               -- printf "cpu %d got work from cpu %d\n" my_no (no x)
               sched True q t
            Nothing -> go xs
 
+
 -- | If any worker is idle, wake one up and give it work to do.
 pushWork :: Sched -> Trace -> IO ()
 pushWork Sched { workpool, idle } t = do
+#ifdef USE_CHASELEV
+  R.pushL workpool t
+#else
   atomicModifyIORef workpool $ \ts -> (t:ts, ())
+#endif
   idles <- readIORef idle
   when (not (null idles)) $ do
     r <- atomicModifyIORef idle (\is -> case is of
@@ -159,9 +186,14 @@ pushWork Sched { workpool, idle } t = do
                                           (i:is) -> (is, putMVar i False))
     r -- wake one up
 
+
 data Sched = Sched
     { no       :: {-# UNPACK #-} !Int,
+#ifdef USE_CHASELEV
+      workpool :: R.ChaseLevDeque Trace,
+#else
       workpool :: IORef [Trace],
+#endif
       idle     :: IORef [MVar Bool],
       scheds   :: [Sched] -- Global list of all per-thread workers.
     }
@@ -209,7 +241,11 @@ data IVarContents a = Full a | Empty | Blocked [a -> Trace]
 {-# INLINE runPar_internal #-}
 runPar_internal :: Bool -> Par a -> IO a
 runPar_internal _doSync x = do
+#ifdef USE_CHASELEV
+   workpools <- replicateM numCapabilities $ newQ
+#else
    workpools <- replicateM numCapabilities $ newIORef []
+#endif
    idle <- newIORef []
    let states = [ Sched { no=x, workpool=wp, idle, scheds=states }
                 | (x,wp) <- zip [0..] workpools ]
