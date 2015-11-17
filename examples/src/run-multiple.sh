@@ -1,5 +1,5 @@
 
-
+source environment
 
 for bench in mandel nbody
 do
@@ -14,7 +14,7 @@ do
 
     for stm in fine tl2 orig
     do
-	make $bench STM=$stm
+	make $bench STM=$stm GHC=$GHC
     done
     
     for i in {1..5}
