@@ -2,3 +2,4 @@ GHC=/home/ml9951/repos/ghc-wip/bin/ghc
 ORIG_PAR_MONAD=/home/ml9951/repos/orig-monad-par/monad-par
 STM_PAR_MONAD=/home/ml9951/repos/stm-monad-par/monad-par
 GHC_DIR=/home/ml9951/repos/ghc-wip
+ATOMIC_OPS_DIR=/home/ml9951/repos/haskell-lockfree/atomic-primops

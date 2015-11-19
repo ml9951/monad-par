@@ -26,7 +26,11 @@ import Control.Concurrent hiding (yield)
 import GHC.Conc (numCapabilities)
 import Control.DeepSeq
 
+#ifdef LINKED_DEQUE
+import qualified Control.Monad.Par.Scheds.LinkedDeque as D
+#else
 import qualified Control.Monad.Par.Scheds.ResizableDeque as D
+#endif
 
 -- import Text.Printf
 

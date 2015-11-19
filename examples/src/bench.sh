@@ -14,7 +14,7 @@ base=$2
 
 args=$3
 
-for exe in fine tl2 orig ; do
+for exe in fine tl2 orig chase-lev; do
     main=$base-$exe
     for t in `seq 1 48` ; do
         cmd="./$main $args +RTS -N$t"

@@ -87,8 +87,12 @@ Flag newgeneric
    Default: False
 
 Flag tl2
-     Description:	Use TL2 for STM based work stealing
-     Default:		False
+     Description: Use TL2 for STM based work stealing
+     Default:   False
+
+Flag linkeddeque
+     Description: Use Linked Double Ended Queue
+     Default:   False
 
 Source-repository head
   type:     git
@@ -135,8 +139,11 @@ Library
     build-depends: par-classes
 
   if flag(tl2)
-     cpp-options:	-DPASTMTL2
-     build-depends:	pastm
+     cpp-options: -DPASTMTL2
+     build-depends: pastm
+
+  if flag(linkeddeque)
+     cpp-options: -DLINKED_DEQUE
 
   ghc-options: -O2
   Other-modules:
@@ -156,6 +163,7 @@ Library
                Control.Monad.Par.Scheds.DirectInternal
               ,Control.Monad.Par.Scheds.TDeque
               ,Control.Monad.Par.Scheds.ResizableDeque
+              ,Control.Monad.Par.Scheds.LinkedDeque
                ------------------------------------------------------------
                --                   Data Structures                      -- 
                ------------------------------------------------------------
