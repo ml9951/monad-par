@@ -122,14 +122,10 @@ reschedule queue@Sched{ workpool, shutdown, lookingForWork } = do
            case mTask of
                 Just t -> sched True queue t
                 Nothing -> do
-                        continue <- atomically $ do
-                                   n <- readTVar lookingForWork
-                                   if n == numCapabilities - 1 --my deque is empty and everyone else is looking for work
-                                   then writeTVar shutdown True >> return False  --no one has anything left so we are odne
-                                   else writeTVar lookingForWork (n+1) >> return True
-                        if continue
-                        then do t <- atomically(steal queue); atomically (incTVar lookingForWork (-1)); sched True queue t
-                        else return()
+                        atomically $ incTVar lookingForWork 1
+                        t <- atomically $ steal queue
+                        atomically $ incTVar lookingForWork (-1)
+                        sched True queue t
                         
 -- RRN: Note -- NOT doing random work stealing breaks the traditional
 -- Cilk time/space bounds if one is running strictly nested (series
@@ -137,15 +133,19 @@ reschedule queue@Sched{ workpool, shutdown, lookingForWork } = do
 
 -- | Attempt to steal work or, failing that, give up and go idle.
 steal :: Sched -> STM Trace
-steal Sched{ scheds, no=my_no, shutdown } = do
+steal Sched{ scheds, no=my_no, shutdown, lookingForWork } = do
   -- printf "cpu %d stealing\n" my_no
   go scheds
   where
     go [] = do
-       done <- readTVar shutdown
-       if done
-       then return Die
-       else retry
+       numLooking <- readTVar lookingForWork
+       if numLooking == numCapabilities
+       then writeTVar shutdown True >> return Die --initiate shutdown
+       else do
+            done <- readTVar shutdown
+            if done
+            then return Die
+            else retry
     go (x:xs)
       | no x == my_no = go xs
       | otherwise     = D.stealWork (workpool x) `orElse` go xs
