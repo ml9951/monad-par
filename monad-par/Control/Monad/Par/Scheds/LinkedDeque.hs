@@ -1,6 +1,6 @@
 {-# LANGUAGE CPP, BangPatterns, NamedFieldPuns #-}
 
-module Control.Monad.Par.Scheds.LinkedDeque (Deque, newDeque, pushWork, popWork, stealWork)
+module Control.Monad.Par.Scheds.LinkedDeque (Deque, newDeque, pushWork, popWork, stealWork, tryPopWork)
 where
 
 #ifdef PASTMTL2
@@ -50,6 +50,17 @@ popWork h@Head{prev=hPrev,next=hNext} = do
                   writeTVar hNext right
                   writeTVar (prev right) h
                   return val
+
+tryPopWork :: Deque a -> STM (Maybe a)
+tryPopWork h@Head{prev=hPrev, next=hNext} = do
+        right <- readTVar hNext
+        case right of
+            Head{} -> return Nothing
+            Link{next=lNext, prev=lPrev,val} -> do
+                  right <- readTVar lNext
+                  writeTVar hNext right
+                  writeTVar (prev right) h
+                  return (Just val)
 
 stealWork :: Deque a -> STM a
 stealWork h@Head{prev=hPrev, next=hNext} = do
